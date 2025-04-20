@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Material Name Remover",
     "author": "Claude",
-    "version": (1, 1),
+    "version": (1, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Material Tab",
     "description": "Remove materials whose names include a specified string",
@@ -9,7 +9,7 @@ bl_info = {
 }
 
 import bpy
-from bpy.props import StringProperty, BoolProperty
+from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.types import Operator, Panel
 
 class MATERIAL_OT_remove_by_name_pattern(Operator):
@@ -24,10 +24,15 @@ class MATERIAL_OT_remove_by_name_pattern(Operator):
         default=""
     )
     
-    replace_in_objects: BoolProperty(
-        name="Replace in Objects",
-        description="Replace removed materials with default in all objects",
-        default=True
+    cleanup_method: EnumProperty(
+        name="Material Slot Cleanup",
+        description="How to handle material slots in objects",
+        items=[
+            ('NONE', "Don't Clean", "Keep material slots intact (may leave empty slots)"),
+            ('CLEAR', "Clear Slots", "Set material slots to None"),
+            ('REMOVE', "Remove Slots", "Remove material slots completely")
+        ],
+        default='REMOVE'
     )
     
     @classmethod
@@ -39,11 +44,41 @@ class MATERIAL_OT_remove_by_name_pattern(Operator):
         # For each object in the scene
         for obj in bpy.data.objects:
             if obj.type == 'MESH' and hasattr(obj, 'material_slots'):
-                # Check each material slot in the object
+                if self.cleanup_method == 'NONE':
+                    continue
+                
+                # We need to work from the end to start for removal
+                # to avoid index shifting problems
+                slots_to_process = []
+                
+                # First identify slots with the material
                 for slot_index, slot in enumerate(obj.material_slots):
                     if slot.material == material:
-                        # Remove the material from this slot
+                        slots_to_process.append(slot_index)
+                
+                # Process them in reverse order (important for REMOVE method)
+                for slot_index in reversed(slots_to_process):
+                    if self.cleanup_method == 'CLEAR':
                         obj.data.materials[slot_index] = None
+                    elif self.cleanup_method == 'REMOVE':
+                        # We need to set context object for this operation
+                        old_active = bpy.context.view_layer.objects.active
+                        bpy.context.view_layer.objects.active = obj
+                        
+                        # Make sure we're in object mode
+                        old_mode = obj.mode
+                        bpy.ops.object.mode_set(mode='OBJECT')
+                        
+                        # Select the slot we want to remove
+                        obj.active_material_index = slot_index
+                        
+                        # Remove the slot
+                        bpy.ops.object.material_slot_remove()
+                        
+                        # Restore previous state
+                        if old_mode != 'OBJECT':
+                            bpy.ops.object.mode_set(mode=old_mode)
+                        bpy.context.view_layer.objects.active = old_active
     
     def execute(self, context):
         pattern = self.pattern.strip()
@@ -62,10 +97,9 @@ class MATERIAL_OT_remove_by_name_pattern(Operator):
         # Count how many materials will be removed
         count = len(materials_to_remove)
         
-        # First clean material references from objects if requested
-        if self.replace_in_objects:
-            for mat in materials_to_remove:
-                self.clean_material_slots(mat)
+        # First clean material references from objects
+        for mat in materials_to_remove:
+            self.clean_material_slots(mat)
         
         # Then remove the materials
         for mat in materials_to_remove:
@@ -81,7 +115,7 @@ class MATERIAL_OT_remove_by_name_pattern(Operator):
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "pattern")
-        layout.prop(self, "replace_in_objects")
+        layout.prop(self, "cleanup_method")
 
 class MATERIAL_PT_remove_panel(Panel):
     """Panel for material removal operations"""
@@ -104,7 +138,10 @@ class MATERIAL_PT_remove_panel(Panel):
             box = layout.box()
             col = box.column()
             for mat in bpy.data.materials:
-                col.label(text=mat.name)
+                row = col.row()
+                row.label(text=mat.name)
+                # Show user count (how many objects use this material)
+                row.label(text=f"Used: {mat.users}")
         
         # Operator button
         layout.operator("material.remove_by_name_pattern")

@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Material Name Remover",
     "author": "Claude",
-    "version": (1, 0),
+    "version": (1, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Material Tab",
     "description": "Remove materials whose names include a specified string",
@@ -9,7 +9,7 @@ bl_info = {
 }
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import StringProperty, BoolProperty
 from bpy.types import Operator, Panel
 
 class MATERIAL_OT_remove_by_name_pattern(Operator):
@@ -24,9 +24,26 @@ class MATERIAL_OT_remove_by_name_pattern(Operator):
         default=""
     )
     
+    replace_in_objects: BoolProperty(
+        name="Replace in Objects",
+        description="Replace removed materials with default in all objects",
+        default=True
+    )
+    
     @classmethod
     def poll(cls, context):
         return len(bpy.data.materials) > 0
+    
+    def clean_material_slots(self, material):
+        """Remove material from all objects that use it"""
+        # For each object in the scene
+        for obj in bpy.data.objects:
+            if obj.type == 'MESH' and hasattr(obj, 'material_slots'):
+                # Check each material slot in the object
+                for slot_index, slot in enumerate(obj.material_slots):
+                    if slot.material == material:
+                        # Remove the material from this slot
+                        obj.data.materials[slot_index] = None
     
     def execute(self, context):
         pattern = self.pattern.strip()
@@ -45,9 +62,13 @@ class MATERIAL_OT_remove_by_name_pattern(Operator):
         # Count how many materials will be removed
         count = len(materials_to_remove)
         
-        # Remove the materials
+        # First clean material references from objects if requested
+        if self.replace_in_objects:
+            for mat in materials_to_remove:
+                self.clean_material_slots(mat)
+        
+        # Then remove the materials
         for mat in materials_to_remove:
-            mat_name = mat.name  # Store name before removal
             bpy.data.materials.remove(mat)
         
         # Report success
@@ -56,6 +77,11 @@ class MATERIAL_OT_remove_by_name_pattern(Operator):
     
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
+    
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "pattern")
+        layout.prop(self, "replace_in_objects")
 
 class MATERIAL_PT_remove_panel(Panel):
     """Panel for material removal operations"""
@@ -71,6 +97,14 @@ class MATERIAL_PT_remove_panel(Panel):
         # Display count of materials
         mat_count = len(bpy.data.materials)
         layout.label(text=f"Materials in scene: {mat_count}")
+        
+        # Show list of materials if there are not too many
+        if mat_count <= 20:  # Only show list if there aren't too many materials
+            layout.label(text="Materials:")
+            box = layout.box()
+            col = box.column()
+            for mat in bpy.data.materials:
+                col.label(text=mat.name)
         
         # Operator button
         layout.operator("material.remove_by_name_pattern")
